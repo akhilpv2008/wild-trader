@@ -1,0 +1,11 @@
+# SECRETS - never commit. The main repo leaked keys because scripts hardcoded them.
+.env
+.env.*
+!.env.example
+*.key
+*secret*
+# local noise
+__pycache__/
+*.pyc
+*.log
+wild_log.txt
