@@ -24,7 +24,9 @@ if ($PROTECTED -contains "$($a.account_number)") { throw "ABORT: recorder pointe
 $eq = [double]$a.equity; $last = [double]$a.last_equity
 $day = [math]::Round($eq - $last, 2)
 $cum = [math]::Round($eq - 10000, 2)
-$pos = @(Invoke-RestMethod -Uri "$base/v2/positions" -Headers $h)
+# An empty Alpaca list ([]) comes back as $null, and @($null) has Count 1 - so filter on a real
+# field, never on .Count alone. Without the Where-Object this writes ":" on a flat day.
+$pos = @(Invoke-RestMethod -Uri "$base/v2/positions" -Headers $h | Where-Object { $_ -and $_.symbol })
 $held = ($pos | ForEach-Object { "$($_.symbol):$($_.qty)" }) -join ";"
 if (-not $held) { $held = "flat" }
 

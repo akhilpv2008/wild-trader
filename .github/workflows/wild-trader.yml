@@ -5,7 +5,12 @@ name: wild-trader
 on:
   schedule:
     - cron: '45 19 * * 1-5'    # 3:45 PM ET Mon-Fri (19:45 UTC during EDT) - decision run
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate creds/signal/sizing without placing any order'
+        type: boolean
+        default: false
 concurrency:
   group: wild-trader-single
   cancel-in-progress: true
@@ -24,6 +29,7 @@ jobs:
           WILD_APCA_API_BASE_URL:   ${{ secrets.WILD_APCA_API_BASE_URL }}
           WILD_APCA_API_KEY_ID:     ${{ secrets.WILD_APCA_API_KEY_ID }}
           WILD_APCA_API_SECRET_KEY: ${{ secrets.WILD_APCA_API_SECRET_KEY }}
+          WILD_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: pwsh ./wild_trader.ps1
 
       - name: Record the scorecard

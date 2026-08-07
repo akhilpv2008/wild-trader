@@ -35,6 +35,12 @@ $ALLOW_SHORT_SIDE  = $true
 
 $BULL = "TQQQ"; $BEAR = "SQQQ"; $SIGNAL = "QQQ"
 
+# DRY RUN: validate creds/signal/sizing and place NO orders. Set WILD_DRY_RUN=1.
+# Used to test the cloud plumbing outside market hours - a market order sent while the
+# market is closed just queues to the open, and the script cannot arm a stop against an
+# unfilled order, which is how a position once sat unprotected over a 4-day closure.
+$DRY = ($env:WILD_DRY_RUN -eq "1" -or $env:WILD_DRY_RUN -eq "true")
+
 function Stamp($m) { Write-Host "[$([DateTime]::UtcNow.ToString('HH:mm:ss'))] $m" }
 
 # ---- credentials: cloud uses WILD_ secrets, locally fall back to wild\.env ---
@@ -69,6 +75,15 @@ if ($base -notmatch 'paper-api') {
   throw "ABORT: base URL '$base' is not the Alpaca PAPER endpoint. This experiment is paper-only."
 }
 Stamp "isolation OK - trading account $acctNo (paper), not the protected accounts"
+if ($DRY) { Stamp "*** DRY RUN - no orders will be placed ***" }
+
+# Market-hours guard: a market order sent while closed queues to the next open and cannot be
+# protected by a stop until it fills. Refuse rather than leave a naked position (mistake #17).
+$clk = Invoke-RestMethod -Uri "$base/v2/clock" -Headers $h
+if (-not $clk.is_open -and -not $DRY) {
+  Stamp "market is CLOSED (next open $($clk.next_open)) - refusing to queue an unprotectable order. Exiting."
+  exit 0
+}
 
 $equity = [double]$acct.equity
 $cash   = [double]$acct.cash
@@ -94,7 +109,9 @@ function LastPx($s) {
 }
 function Pos($s) { try { Invoke-RestMethod -Uri "$base/v2/positions/$s" -Headers $h } catch { $null } }
 function CancelOpen($s) {
-  foreach ($o in @(Invoke-RestMethod -Uri "$base/v2/orders?status=open&symbols=$s" -Headers $h)) {
+  # Filter on a real field: an empty Alpaca list ([]) becomes $null and @($null) has Count 1,
+  # which would otherwise send a DELETE to /v2/orders/ with an empty id.
+  foreach ($o in @(Invoke-RestMethod -Uri "$base/v2/orders?status=open&symbols=$s" -Headers $h | Where-Object { $_ -and $_.id })) {
     try { Invoke-RestMethod -Uri "$base/v2/orders/$($o.id)" -Method Delete -Headers $h | Out-Null } catch {}
   }
 }
@@ -115,6 +132,7 @@ foreach ($s in @($BULL, $BEAR)) {
   if ($s -eq $target) { continue }
   $p = Pos $s
   if (-not $p) { continue }
+  if ($DRY) { Stamp "DRY: would close $s qty $($p.qty) (signal favours $(if($target){$target}else{'cash'}))"; continue }
   CancelOpen $s; Start-Sleep -Seconds 1
   try {
     Invoke-RestMethod -Uri "$base/v2/positions/$s" -Method Delete -Headers $h | Out-Null
@@ -146,6 +164,12 @@ $drift = if ($targetQty -gt 0) { [math]::Abs($delta) / [double]$targetQty } else
 if ($delta -ne 0 -and $drift -gt $RELEVER_TOLERANCE) {
   $side = if ($delta -gt 0) { "buy" } else { "sell" }
   $qty = [math]::Abs($delta)
+  if ($DRY) {
+    Stamp "DRY: would $($side.ToUpper()) $qty $target @ ~$([math]::Round($px,2)) -> $targetQty shares = `$$([math]::Round($targetNotional,0)) ($([math]::Round($targetNotional/$equity,2))x equity)"
+    Stamp "DRY: would then arm a stop @ $([math]::Round($px*(1-$DISASTER_STOP),2)) (-$([math]::Round($DISASTER_STOP*100,0))%) and verify it rests"
+    Stamp "DRY RUN complete - plumbing OK, no orders placed"
+    exit 0
+  }
   # Cancel the resting stop first - it reserves shares and will reject/partial the resize.
   CancelOpen $target; Start-Sleep -Seconds 1
   $body = @{ symbol = $target; qty = "$qty"; side = $side; type = "market"; time_in_force = "day" } | ConvertTo-Json
@@ -156,6 +180,7 @@ if ($delta -ne 0 -and $drift -gt $RELEVER_TOLERANCE) {
   } catch { Stamp "$target $side err $($_.ErrorDetails.Message)" }
 } else {
   Stamp "already within $([math]::Round($RELEVER_TOLERANCE*100,0))% of target exposure - no resize"
+  if ($DRY) { Stamp "DRY RUN complete - plumbing OK, no orders placed"; exit 0 }
 }
 
 # ---- 4) ARM the disaster stop, then VERIFY it actually rests ----------------
