@@ -15,6 +15,8 @@ if (-not $kid) {
   $kid = $m["WILD_APCA_API_KEY_ID"]; $sec = $m["WILD_APCA_API_SECRET_KEY"]; $base = $m["WILD_APCA_API_BASE_URL"]
 }
 if (-not $base) { $base = "https://paper-api.alpaca.markets" }
+# Trim first - a secret stored with a trailing newline breaks the URL and the auth headers.
+$base = $base.Trim(); $kid = $kid.Trim(); $sec = $sec.Trim()
 $base = ($base.TrimEnd('/')) -replace '/v2$', ''
 $h = @{ "APCA-API-KEY-ID" = $kid; "APCA-API-SECRET-KEY" = $sec }
 

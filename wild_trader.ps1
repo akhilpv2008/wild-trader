@@ -59,6 +59,11 @@ if (-not $kid) {
   $kid = $m["WILD_APCA_API_KEY_ID"]; $sec = $m["WILD_APCA_API_SECRET_KEY"]; $base = $m["WILD_APCA_API_BASE_URL"]
 }
 if (-not $base) { $base = "https://paper-api.alpaca.markets" }
+# Trim whitespace/newlines: a secret stored with a trailing newline turns the URL into
+# "https://paper-api.alpaca.markets`n/v2/account" and fails with an opaque
+# "Resource temporarily unavailable" (hit 2026-08-07). Also guards the auth headers,
+# where an embedded newline would be rejected outright.
+$base = $base.Trim(); $kid = $kid.Trim(); $sec = $sec.Trim()
 $base = $base.TrimEnd('/')
 # A trailing /v2 caused a 404 outage on the main bot 2026-08-07 - strip it defensively.
 if ($base -match '/v2$') { $base = $base -replace '/v2$', ''; Stamp "stripped trailing /v2 from base URL" }
