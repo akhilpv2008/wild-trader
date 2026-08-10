@@ -24,7 +24,14 @@ $ErrorActionPreference = "Stop"
 $PROTECTED = @("PA3T3IPIRNWJ", "PA39L2W87E2A")   # main dip-buyer, politician copybot
 
 # ---- strategy knobs ---------------------------------------------------------
-$LEVERAGE          = 2.0     # margin multiplier on top of the 3x ETF (~6x underlying)
+$LEVERAGE          = 2.0     # DESIRED margin multiplier. The broker's maintenance requirement
+                             # usually binds first - see MAINT_RATE below.
+# Alpaca charges ~75% maintenance margin on 3x leveraged ETFs (measured live 2026-08-10:
+# $14,520 maintenance on a $19,319 TQQQ position = 75.2%), NOT the standard 25%. That caps
+# sustainable exposure at equity/0.75 = 1.33x, so the 2.0x target above is unreachable and
+# opening it put the account straight into a $4,506 margin deficiency.
+$MAINT_RATE_FALLBACK = 0.75  # used only when no position exists to measure from
+$MARGIN_SAFETY       = 0.90  # sit at 90% of the sustainable max, don't ride the call line
 $DISASTER_STOP     = 0.20    # -20% broker-side stop on the position
 $SMA_LEN           = 20      # trend filter length on QQQ
 $RELEVER_TOLERANCE = 0.05    # only resize when >5% away from target (avoid pointless churn)
@@ -151,11 +158,24 @@ if (-not $target) { Stamp "bearish with short side disabled - staying in cash"; 
 # Re-read the account: the flip above changes cash/equity.
 $acct = Invoke-RestMethod -Uri "$base/v2/account" -Headers $h
 $equity = [double]$acct.equity
-# regt_buying_power is the OVERNIGHT (Reg-T) limit. Using day-trading BP would let the
-# position get force-liquidated at the close, which would confound the experiment.
-$regt = [double]$acct.regt_buying_power
 $px = LastPx $target
-$targetNotional = [math]::Min($equity * $LEVERAGE, $regt * 0.97)
+# SIZING. Do NOT cap on regt_buying_power: once a position is open that reports the REMAINING
+# capacity, not the total. On 2026-08-10 it read $668 against a $19,319 position, so capping on
+# it would have computed a target of 8 shares and dumped 253 of them - a bug, not a decision.
+# The real constraint is the maintenance requirement. Measure the broker's actual rate from the
+# live position when there is one, since 3x ETFs carry a far higher rate than ordinary stock.
+$maintRate = $MAINT_RATE_FALLBACK
+$mm = [double]$acct.maintenance_margin
+$posVal = [double]$acct.long_market_value
+if ($mm -gt 0 -and $posVal -gt 0) {
+  $measured = $mm / $posVal
+  if ($measured -gt 0.05 -and $measured -lt 1.0) { $maintRate = $measured }
+}
+$maxSustainable = ($equity / $maintRate) * $MARGIN_SAFETY
+$targetNotional = [math]::Min($equity * $LEVERAGE, $maxSustainable)
+Stamp "margin: maintenance rate $([math]::Round($maintRate*100,1))% -> max sustainable `$$([math]::Round($maxSustainable,0)) ($([math]::Round($maxSustainable/$equity,2))x equity); desired $LEVERAGE`x = `$$([math]::Round($equity*$LEVERAGE,0))"
+$deficit = $equity - $mm
+if ($deficit -lt 0) { Stamp "MARGIN DEFICIENCY `$$([math]::Round($deficit,2)) - deleveraging to cure it" }
 
 $p = Pos $target
 $curQty = if ($p) { [int]$p.qty } else { 0 }
